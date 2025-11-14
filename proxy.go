@@ -31,7 +31,17 @@ var contextIDZero = quicvarint.Append([]byte{}, 0)
 
 type proxyEntry struct {
 	str  *http3.Stream
-	conn *net.UDPConn
+	conn ProxyConn
+}
+
+// ProxyConn is a connection used to communicate with endpoints we're proxying to
+// It primarily has PacketConn semantics, since we intend on sending and receiving
+// datagrams, but it needs to provide net.Conn functionality for convenience. This will
+// typically be a *net.UDPConn, but you may use another concrete implementation wrapping
+// one to add semantics (e.g. stats).
+type ProxyConn interface {
+	net.PacketConn
+	net.Conn
 }
 
 func (e proxyEntry) Close() error {
@@ -226,7 +236,7 @@ func writeResponseWithHijacker(headers http.Header, httpConn net.Conn, buf *bufi
 // Applications may add custom header fields such as Proxy-Status
 // to the response header, but MUST NOT call WriteHeader on the
 // http.ResponseWriter. It closes the connection before returning.
-func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn *net.UDPConn) error {
+func (s *Proxy) ProxyConnectedSocket(w http.ResponseWriter, r *Request, conn ProxyConn) error {
 	s.mx.Lock()
 	if s.closed {
 		s.mx.Unlock()
