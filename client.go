@@ -219,12 +219,40 @@ func (c *H3Client) Close() error {
 }
 
 // H1Client establishes proxied UDP connections to remote hosts, using HTTP/1.1.
-// Set Dialer to control how to establish the http connection.
 // Set OnRequest to customize the request (e.g. authz headers).
+// Other options behave similarly to http.Transport.
 type H1Client struct {
 	TLSClientConfig *tls.Config
-	Dialer          func(ctx context.Context, network, address string) (net.Conn, error)
-	OnRequest       func(req *http.Request) *http.Request
+	// DialContext specifies how to establish a plaintext http connection. If nil, default net.Dialer is used.
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+
+	// DialTLSContext species how to establish a tls connection. If DialTLSConext is nil, DialContext with TLSClientConfig
+	// are used.
+	DialTLSContext func(ctx context.Context, network, address string) (net.Conn, error)
+	OnRequest      func(req *http.Request) *http.Request
+}
+
+func (c *H1Client) dialTLS(ctx context.Context, authority string) (net.Conn, error) {
+	if c.DialTLSContext != nil {
+		return c.DialTLSContext(ctx, "tcp", authority)
+	}
+
+	dialer := c.DialContext
+	if dialer == nil {
+		dialer = (&net.Dialer{}).DialContext
+	}
+
+	rawConn, err := dialer(ctx, "tcp", authority)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsClient := tls.Client(rawConn, c.TLSClientConfig)
+	if err := tlsClient.Handshake(); err != nil {
+		return nil, err
+	}
+
+	return tlsClient, err
 }
 
 func (c *H1Client) Connect(ctx context.Context, expandedTemplate string, raddr net.Addr) (net.PacketConn, *http.Response, error) {
@@ -233,7 +261,7 @@ func (c *H1Client) Connect(ctx context.Context, expandedTemplate string, raddr n
 		return nil, nil, fmt.Errorf("masque: failed to parse URI: %w", err)
 	}
 	authority := u.Host
-	dialer := c.Dialer
+	dialer := c.DialContext
 	if dialer == nil {
 		dialer = (&net.Dialer{}).DialContext
 	}
@@ -254,16 +282,11 @@ func (c *H1Client) Connect(ctx context.Context, expandedTemplate string, raddr n
 		if u.Port() == "" {
 			authority = authority + ":443"
 		}
-		rawConn, err := dialer(ctx, "tcp", authority)
+		tlsConn, err := c.dialTLS(ctx, authority)
 		if err != nil {
 			return nil, nil, err
 		}
-
-		tlsClient := tls.Client(rawConn, c.TLSClientConfig)
-		if err := tlsClient.Handshake(); err != nil {
-			return nil, nil, err
-		}
-		httpConn = tlsClient
+		httpConn = tlsConn
 	default:
 		return nil, nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
 	}
